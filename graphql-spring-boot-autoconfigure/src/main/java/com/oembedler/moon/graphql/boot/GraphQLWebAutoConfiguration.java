@@ -19,6 +19,9 @@
 
 package com.oembedler.moon.graphql.boot;
 
+import com.coxautodev.graphql.tools.PerFieldObjectMapperProvider;
+import com.fasterxml.jackson.databind.InjectableValues;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import graphql.execution.AsyncExecutionStrategy;
 import graphql.execution.ExecutionStrategy;
 import graphql.execution.SubscriptionExecutionStrategy;
@@ -38,11 +41,10 @@ import graphql.servlet.GraphQLQueryInvoker;
 import graphql.servlet.GraphQLRootObjectBuilder;
 import graphql.servlet.GraphQLSchemaProvider;
 import graphql.servlet.GraphQLServletListener;
-import graphql.servlet.GraphQLWebsocketServlet;
 import graphql.servlet.ObjectMapperConfigurer;
+import graphql.servlet.ObjectMapperProvider;
 import graphql.servlet.SimpleGraphQLHttpServlet;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -57,13 +59,13 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
 import org.springframework.web.servlet.DispatcherServlet;
 import org.springframework.web.servlet.config.annotation.CorsRegistryWorkaround;
-import org.springframework.web.socket.server.standard.ServerEndpointExporter;
-import org.springframework.web.socket.server.standard.ServerEndpointRegistration;
 
 import javax.servlet.MultipartConfigElement;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+
+import static graphql.servlet.GraphQLObjectMapper.newBuilder;
 
 
 /**
@@ -84,9 +86,6 @@ public class GraphQLWebAutoConfiguration {
 
     @Autowired
     private GraphQLServletProperties graphQLServletProperties;
-
-    @Value("${graphql.servlet.subscriptions.websocket.path:/subscriptions}")
-    private String websocketPath;
 
     @Autowired(required = false)
     private List<GraphQLServletListener> listeners;
@@ -205,19 +204,34 @@ public class GraphQLWebAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public GraphQLObjectMapper graphQLObjectMapper() {
-        GraphQLObjectMapper.Builder builder = GraphQLObjectMapper.newBuilder();
+    public GraphQLObjectMapper graphQLObjectMapper(Optional<ObjectMapperProvider> objectMapperProvider) {
+        GraphQLObjectMapper.Builder builder = newBuilder();
 
         if (errorHandler != null) {
             builder.withGraphQLErrorHandler(errorHandler);
         }
 
-        if (objectMapperConfigurer != null) {
+        if (objectMapperProvider.isPresent()){
+            builder.withObjectMapperProvider(objectMapperProvider.get());
+        } else if (objectMapperConfigurer != null) {
             builder.withObjectMapperConfigurer(objectMapperConfigurer);
         }
 
         return builder.build();
     }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(value="graphql.servlet.use-default-objectmapper", havingValue = "true",
+            matchIfMissing = true)
+    public ObjectMapperProvider objectMapperProvider(ObjectMapper objectMapper) {
+
+        InjectableValues.Std injectableValues = new InjectableValues.Std();
+        injectableValues.addValue(ObjectMapper.class, objectMapper);
+        objectMapper.setInjectableValues(injectableValues);
+        return () -> objectMapper;
+    }
+
 
 
     @Bean
@@ -226,6 +240,7 @@ public class GraphQLWebAutoConfiguration {
         return SimpleGraphQLHttpServlet.newBuilder(invocationInputFactory)
                 .withQueryInvoker(queryInvoker)
                 .withObjectMapper(graphQLObjectMapper)
+                .withListeners(listeners)
                 .build();
     }
 
@@ -234,23 +249,6 @@ public class GraphQLWebAutoConfiguration {
         ServletRegistrationBean<AbstractGraphQLHttpServlet> registration = new ServletRegistrationBean<>(servlet, graphQLServletProperties.getServletMapping());
         registration.setMultipartConfig(multipartConfigElement());
         return registration;
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public GraphQLWebsocketServlet graphQLWebsocketServlet(GraphQLInvocationInputFactory invocationInputFactory, GraphQLQueryInvoker queryInvoker, GraphQLObjectMapper graphQLObjectMapper) {
-        return new GraphQLWebsocketServlet(queryInvoker, invocationInputFactory, graphQLObjectMapper);
-    }
-
-    @Bean
-    public ServerEndpointRegistration serverEndpointRegistration(GraphQLWebsocketServlet servlet) {
-        return new GraphQLWsServerEndpointRegistration(websocketPath, servlet);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public ServerEndpointExporter serverEndpointExporter() {
-        return new ServerEndpointExporter();
     }
 
     private MultipartConfigElement multipartConfigElement() {
